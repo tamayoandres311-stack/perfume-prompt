@@ -25,23 +25,22 @@
 <script type="text/babel">
 const { useState, useRef, useCallback } = React;
 
-const getKey = () => localStorage.getItem("gemini_key") || "";
-const saveKey = (k) => localStorage.setItem("gemini_key", k);
-
-const geminiCall = async (parts, systemInstruction, useSearch=false) => {
-  const GEMINI_KEY = getKey();
-  const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
-  const body = {
-    contents:[{role:"user",parts}],
-    generationConfig:{temperature:0.4,maxOutputTokens:2200}
-  };
-  if (systemInstruction) body.systemInstruction = {parts:[{text:systemInstruction}]};
-  if (useSearch) body.tools = [{googleSearch:{}}];
-  const url = GEMINI_URL;
-  const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+const aiCall = async (parts, systemPrompt) => {
+  const content = parts.map(p => {
+    if (p.inlineData) return {type:"image_url", image_url:{url:`data:${p.inlineData.mimeType};base64,${p.inlineData.data}`}};
+    return {type:"text", text:p.text};
+  });
+  const messages = [];
+  if (systemPrompt) messages.push({role:"system", content:systemPrompt});
+  messages.push({role:"user", content});
+  const r = await fetch("https://text.pollinations.ai/", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model:"openai", messages, temperature:0.4, max_tokens:2200})
+  });
+  if (!r.ok) throw new Error("AI error "+r.status);
   const d = await r.json();
-  if (d.error) throw new Error(d.error.message);
-  return d.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim() || "";
+  return d.choices?.[0]?.message?.content?.trim() || "";
 };
 const pollImg = (prompt, seed) =>
   `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0,1800))}?width=832&height=1040&model=flux&seed=${seed}&nologo=true&enhance=true`;
@@ -84,45 +83,11 @@ const STEPS = [
   { id:"gemini", emoji:"💎", label:"Puliendo con Gemini 2.0" },
 ];
 
-function KeySetup({onSave}) {
-  const [k, setK] = React.useState("");
-  return (
-    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#0e0600,#1a0a00)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-      <div style={{maxWidth:400,width:"100%"}}>
-        <div style={{textAlign:"center",marginBottom:28}}>
-          <div style={{fontSize:22,color:"#c9a84c",letterSpacing:8}}>✦</div>
-          <h1 style={{fontSize:18,fontWeight:400,letterSpacing:5,color:"#e8d5b0",margin:"6px 0 4px"}}>PERFUME PROMPT</h1>
-          <p style={{fontSize:9,letterSpacing:3,color:"#5a4a2a"}}>CONFIGURACIÓN INICIAL</p>
-        </div>
-        <div style={{background:"rgba(201,168,76,0.06)",border:"1px solid rgba(201,168,76,0.18)",borderRadius:12,padding:22}}>
-          <p style={{fontSize:12,color:"#c9a84c",letterSpacing:1,marginBottom:6}}>GEMINI API KEY</p>
-          <p style={{fontSize:11,color:"#7a6a4a",marginBottom:14,lineHeight:1.6}}>
-            Obtén tu key gratuita en <span style={{color:"#c9a84c"}}>aistudio.google.com/apikey</span> → Crear clave de API. Se guarda solo en tu dispositivo.
-          </p>
-          <input
-            type="password"
-            placeholder="Pega tu API key aquí…"
-            value={k}
-            onChange={e=>setK(e.target.value)}
-            style={{width:"100%",padding:"12px",background:"rgba(0,0,0,0.3)",border:"1px solid rgba(201,168,76,0.3)",borderRadius:8,color:"#e8d5b0",fontSize:12,fontFamily:"Georgia,serif",marginBottom:14,boxSizing:"border-box"}}
-          />
-          <button
-            onClick={()=>{if(k.trim()){saveKey(k.trim());onSave();}}}
-            style={{...{width:"100%",padding:"14px",border:"none",borderRadius:8,background:"linear-gradient(135deg,#c9a84c,#9a6820)",color:"#0e0600",fontSize:12,fontFamily:"Georgia,serif",letterSpacing:3,fontWeight:700,cursor:"pointer"}}}>
-            GUARDAR Y CONTINUAR
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [b64, setB64]         = useState(null);
   const [mime, setMime]       = useState("image/jpeg");
   const [preview, setPreview] = useState(null);
   const [drag, setDrag]       = useState(false);
-  const [hasKey, setHasKey]   = useState(!!getKey());
   const [phase, setPhase]     = useState("upload");
   const [curStep, setCurStep] = useState(null);
   const [doneSteps, setDoneSteps] = useState([]);
@@ -144,7 +109,7 @@ function App() {
   };
 
   const searchCall = async (sys, usr) => {
-    return await geminiCall([{text: usr}], sys, true);
+    return await aiCall([{text: usr}], sys);
   };
 
   const loadImg = (file) => {
@@ -178,7 +143,7 @@ function App() {
     try {
       // PASO 1
       setCurStep("vision");
-      const vt = await geminiCall([
+      const vt = await aiCall([
         {inlineData:{mimeType:mime,data:b64}},
         {text:"Devuelve SOLO el JSON, sin backticks ni markdown."}
       ], `Analiza la imagen de perfume y devuelve SOLO JSON sin backticks:
@@ -215,7 +180,7 @@ function App() {
       // PASO 3
       setCurStep("prompt");
       const scene = getScene(pf.familia,pf.occasion);
-      const base = await geminiCall([
+      const base = await aiCall([
         {inlineData:{mimeType:mime,data:b64}},
         {text:`Reference bottle above.
 PERFUME: ${pf.marca} ${pf.nombre}${pf.subtitulo?" — "+pf.subtitulo:""}
@@ -237,7 +202,7 @@ Output ONLY the final prompt in plain English. No headers, no markdown.`);
       setCurStep("gemini");
       let finalPr = base;
       try {
-        const gp = await geminiCall([{text:`Elite luxury perfume photography art director. Elevate this prompt.
+        const gp = await aiCall([{text:`Elite luxury perfume photography art director. Elevate this prompt.
 MUST: 1.Scene only for this fragrance-no generic surfaces 2.Quiet luxury-history patina purpose 3.Typography legible: ultra-thin serif brand small-caps gold labels light sans values cream#F5ECD7 dark zones contrast≥4.5:1 4.Preserve ALL technical data 5.No clichés.
 Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
         if(gp){finalPr=gp;setGemOk(true);}
@@ -258,7 +223,6 @@ Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
 
   const reset=()=>{setPhase("upload");setB64(null);setPreview(null);setPerf(null);setPrompt("");setRawP("");setGenImg(null);setErr("");setDoneSteps([]);setCurStep(null);setGemOk(true);setGenning(false);};
 
-  if (!hasKey) return <KeySetup onSave={()=>setHasKey(true)} />;
 
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#0e0600,#1a0a00 50%,#0a0410)",padding:"20px 14px 40px"}}>
