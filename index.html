@@ -13,7 +13,7 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; background: #0e0600; font-family: Georgia, serif; color: #e8d5b0; }
-  select option { background: #1a0a00; color: #e8d5b0; }
+  input, textarea { outline: none; }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-thumb { background: rgba(201,168,76,0.3); border-radius: 2px; }
   @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
@@ -25,31 +25,29 @@
 <script type="text/babel">
 const { useState, useRef, useCallback } = React;
 
-const aiCall = async (parts, systemPrompt) => {
-  const hasImage = parts.some(p => p.inlineData);
-  const content = parts.map(p => {
-    if (p.inlineData) return {type:"image_url", image_url:{url:`data:${p.inlineData.mimeType};base64,${p.inlineData.data}`}};
-    return {type:"text", text:p.text};
-  });
+/* ── API de texto: Pollinations (gratis, sin key, CORS abierto) ── */
+const aiCall = async (userText, systemPrompt) => {
   const messages = [];
   if (systemPrompt) messages.push({role:"system", content:systemPrompt});
-  messages.push({role:"user", content: hasImage ? content : content[0].text});
-  const model = hasImage ? "openai-large" : "openai";
+  messages.push({role:"user", content:userText});
   const r = await fetch("https://text.pollinations.ai/", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model, messages, temperature:0.4, max_tokens:2200})
+    body:JSON.stringify({model:"openai", messages, temperature:0.5, max_tokens:2200})
   });
-  if (!r.ok) throw new Error("AI error "+r.status);
+  if (!r.ok) throw new Error("Error IA: "+r.status);
   const d = await r.json();
   return d.choices?.[0]?.message?.content?.trim() || "";
 };
+
+/* ── Imagen: Pollinations Flux (gratis) ── */
 const pollImg = (prompt, seed) =>
   `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0,1800))}?width=832&height=1040&model=flux&seed=${seed}&nologo=true&enhance=true`;
 
 const S = {
-  gold:  { width:"100%",padding:"14px",border:"none",borderRadius:8,background:"linear-gradient(135deg,#c9a84c,#9a6820)",color:"#0e0600",fontSize:12,fontFamily:"Georgia,serif",letterSpacing:3,fontWeight:700,cursor:"pointer" },
-  ghost: { padding:"11px 14px",border:"1px solid rgba(201,168,76,0.22)",borderRadius:8,background:"transparent",color:"#c9a84c",fontSize:10,fontFamily:"Georgia,serif",letterSpacing:2,cursor:"pointer" },
+  gold:  {width:"100%",padding:"14px",border:"none",borderRadius:8,background:"linear-gradient(135deg,#c9a84c,#9a6820)",color:"#0e0600",fontSize:12,fontFamily:"Georgia,serif",letterSpacing:3,fontWeight:700,cursor:"pointer"},
+  ghost: {padding:"11px 14px",border:"1px solid rgba(201,168,76,0.22)",borderRadius:8,background:"transparent",color:"#c9a84c",fontSize:10,fontFamily:"Georgia,serif",letterSpacing:2,cursor:"pointer"},
+  input: {width:"100%",padding:"12px 14px",background:"rgba(0,0,0,0.35)",border:"1px solid rgba(201,168,76,0.25)",borderRadius:8,color:"#e8d5b0",fontSize:13,fontFamily:"Georgia,serif",marginBottom:10},
 };
 
 const SCENES = {
@@ -79,24 +77,21 @@ const getScene = (fam, occ) => {
 };
 
 const STEPS = [
-  { id:"vision", emoji:"📷", label:"Analizando imagen del perfume" },
   { id:"search", emoji:"🌐", label:"Investigando notas olfativas" },
   { id:"prompt", emoji:"✨", label:"Construyendo escena editorial" },
-  { id:"gemini", emoji:"💎", label:"Puliendo con Gemini 2.0" },
+  { id:"polish", emoji:"💎", label:"Puliendo el prompt" },
 ];
 
 function App() {
-  const [b64, setB64]         = useState(null);
-  const [mime, setMime]       = useState("image/jpeg");
+  const [marca, setMarca]     = useState("");
+  const [nombre, setNombre]   = useState("");
   const [preview, setPreview] = useState(null);
-  const [drag, setDrag]       = useState(false);
-  const [phase, setPhase]     = useState("upload");
+  const [phase, setPhase]     = useState("form");
   const [curStep, setCurStep] = useState(null);
   const [doneSteps, setDoneSteps] = useState([]);
   const [perf, setPerf]       = useState(null);
   const [prompt, setPrompt]   = useState("");
   const [rawP, setRawP]       = useState("");
-  const [gemOk, setGemOk]     = useState(true);
   const [genImg, setGenImg]   = useState(null);
   const [genning, setGenning] = useState(false);
   const [copied, setCopied]   = useState(false);
@@ -108,23 +103,15 @@ function App() {
     try { return JSON.parse(clean); } catch {}
     const m = clean.match(/\{[\s\S]*\}/);
     if (m) { try { return JSON.parse(m[0]); } catch {} }
-    throw new Error("RESPUESTA IA: " + txt.slice(0,200));
-  };
-
-  const searchCall = async (sys, usr) => {
-    return await aiCall([{text: usr}], sys);
+    return null;
   };
 
   const loadImg = (file) => {
     if (!file||!file.type.startsWith("image/")) return;
     const rd = new FileReader();
-    rd.onload = e => { setB64(e.target.result.split(",")[1]); setMime(file.type); setPreview(e.target.result); setErr(""); };
+    rd.onload = e => setPreview(e.target.result);
     rd.readAsDataURL(file);
   };
-
-  const onDrop = useCallback(e => { e.preventDefault(); setDrag(false); loadImg(e.dataTransfer.files[0]); }, []);
-
-  const markDone = (id) => { setCurStep(null); setDoneSteps(p=>[...p,id]); };
 
   const copy = (t) => {
     try {
@@ -140,79 +127,74 @@ function App() {
     setCopied(true); setTimeout(()=>setCopied(false),2500);
   };
 
-  const runPipeline = async () => {
-    if (!b64) return;
-    setPhase("running"); setErr(""); setDoneSteps([]); setPrompt(""); setRawP(""); setGenImg(null);
-    try {
-      // PASO 1
-      setCurStep("vision");
-      const vt = await aiCall([
-        {inlineData:{mimeType:mime,data:b64}},
-        {text:"Devuelve SOLO el JSON, sin backticks ni markdown."}
-      ], `Analiza la imagen de perfume y devuelve SOLO JSON sin backticks:
-{"marca":"","nombre":"","subtitulo":"","desc_frasco":"","desc_frasco_en":"ultra-detailed English bottle description for AI generators: exact silhouette, faceting, glass color, optical depth, metallic trim, cap design, engravings, proportions","notas_salida":[],"notas_corazon":[],"notas_fondo":[],"familia_olfativa":"","intensidad":"4","duracion":"","estacion":"","ocasion":"","hay_notas":false}`);
-      if (!vt) throw new Error("Respuesta vacía de la IA");
-      const vp = parseJSON(vt);
-      const pf = {
-        marca:vp.marca||"",nombre:vp.nombre||"",subtitulo:vp.subtitulo||"",
-        descFrasco:vp.desc_frasco||"",descFrascoEn:vp.desc_frasco_en||"",
-        familia:vp.familia_olfativa||"",intensity:vp.intensidad||"4",
-        duration:vp.duracion||"6-8h",season:vp.estacion||"Otoño/Invierno",occasion:vp.ocasion||"",
-        salida:vp.notas_salida||[],corazon:vp.notas_corazon||[],fondo:vp.notas_fondo||[]
-      };
-      markDone("vision");
+  const markDone = (id) => { setCurStep(null); setDoneSteps(p=>[...p,id]); };
 
-      // PASO 2
+  const runPipeline = async () => {
+    if (!marca.trim()||!nombre.trim()) return;
+    setPhase("running"); setErr(""); setDoneSteps([]); setPrompt(""); setRawP(""); setGenImg(null);
+    const pf = {
+      marca:marca.trim(), nombre:nombre.trim(),
+      familia:"", intensity:"4", duration:"6-8h",
+      season:"Otoño/Invierno", occasion:"",
+      salida:[], corazon:[], fondo:[]
+    };
+    try {
+      // PASO 1 — Buscar notas olfativas
       setCurStep("search");
-      if ((!vp.hay_notas||(pf.salida.length+pf.corazon.length+pf.fondo.length===0))&&pf.marca&&pf.nombre){
-        try {
-          const st = await searchCall(
-            `Experto en perfumería. Devuelve SOLO JSON sin backticks: {"salida":[],"corazon":[],"fondo":[],"familia":"","desc_frasco_en":"","ocasion":""}`,
-            `Notas olfativas de "${pf.nombre}" de "${pf.marca}"${pf.subtitulo?` (${pf.subtitulo})`:""}`
-          );
-          const sp = parseJSON(st);
-          if(sp.salida?.length) pf.salida=sp.salida;
-          if(sp.corazon?.length) pf.corazon=sp.corazon;
-          if(sp.fondo?.length) pf.fondo=sp.fondo;
-          if(sp.familia&&!pf.familia) pf.familia=sp.familia;
-          if(sp.desc_frasco_en&&!pf.descFrascoEn) pf.descFrascoEn=sp.desc_frasco_en;
-          if(sp.ocasion&&!pf.occasion) pf.occasion=sp.ocasion;
-        } catch(e){ console.warn(e); }
+      const st = await aiCall(
+        `Dame las notas olfativas de "${pf.nombre}" de "${pf.marca}". Devuelve SOLO JSON sin backticks:\n{"salida":[],"corazon":[],"fondo":[],"familia":"","intensidad":"4","duracion":"","estacion":"","ocasion":"","desc_frasco_en":"detailed English bottle description: silhouette, glass color, metallic trim, cap design, proportions"}`,
+        `Experto en perfumería. Responde SOLO con JSON válido, sin texto adicional.`
+      );
+      const sp = parseJSON(st);
+      if (sp) {
+        if(sp.salida?.length)  pf.salida   = sp.salida;
+        if(sp.corazon?.length) pf.corazon  = sp.corazon;
+        if(sp.fondo?.length)   pf.fondo    = sp.fondo;
+        if(sp.familia)         pf.familia  = sp.familia;
+        if(sp.intensidad)      pf.intensity = sp.intensidad;
+        if(sp.duracion)        pf.duration  = sp.duracion;
+        if(sp.estacion)        pf.season    = sp.estacion;
+        if(sp.ocasion)         pf.occasion  = sp.ocasion;
+        if(sp.desc_frasco_en)  pf.descFrascoEn = sp.desc_frasco_en;
       }
       markDone("search"); setPerf(pf);
 
-      // PASO 3
+      // PASO 2 — Construir prompt editorial
       setCurStep("prompt");
-      const scene = getScene(pf.familia,pf.occasion);
-      const base = await aiCall([
-        {inlineData:{mimeType:mime,data:b64}},
-        {text:`Reference bottle above.
-PERFUME: ${pf.marca} ${pf.nombre}${pf.subtitulo?" — "+pf.subtitulo:""}
-FAMILY: ${pf.familia} | INTENSITY: ${pf.intensity}/5 | DURATION: ${pf.duration} | SEASON: ${pf.season} | FOR: ${pf.occasion}
+      const scene = getScene(pf.familia, pf.occasion);
+      const base = await aiCall(
+        `PERFUME: ${pf.marca} ${pf.nombre}
+FAMILY: ${pf.familia||"luxury"} | INTENSITY: ${pf.intensity}/5 | DURATION: ${pf.duration} | SEASON: ${pf.season} | FOR: ${pf.occasion||"special occasions"}
 TOP: ${pf.salida.join(", ")||"—"} | HEART: ${pf.corazon.join(", ")||"—"} | BASE: ${pf.fondo.join(", ")||"—"}
-BOTTLE: ${pf.descFrasco} / ${pf.descFrascoEn}
+BOTTLE: ${pf.descFrascoEn||pf.marca+" "+pf.nombre+" luxury bottle"}
 SCENE: ${scene}
-BUILD: expand scene 2-3 props from notes/use-case | bottle center 35% forensic replica | left macro clusters TOP/HEART/BASE | typography all labels Spanish | post scene-matched grade 25% vignette 6% grain chrom-ab glass only | Hasselblad H6D-400c 120mm f/8 ISO200 8K 4:5 300dpi`}
-      ], `Elite luxury perfume editorial photographer and AI prompt architect.
+BUILD: expand scene 2-3 props from notes | bottle center 35% | left note pyramid TOP/HEART/BASE | all labels in Spanish | Hasselblad H6D-400c 120mm f/8 ISO200 8K 4:5 300dpi | 25% vignette 6% grain`,
+        `Elite luxury perfume editorial photographer and AI prompt architect.
 RULES:
-1. SCENE SINGULARITY — architecturally specific, 2-3 props from notes/use-case with narrative purpose, no generic backdrops.
-2. ELEGANCE — quiet luxury, patina, history, purposeful negative space. Vogue/Harper's Bazaar quality.
-3. TYPOGRAPHY: brand ultra-thin serif 28pt tracking+200 | name medium italic 22pt | labels (SALIDA/CORAZÓN/FONDO/FAMILIA OLFATIVA/INTENSIDAD/DURACIÓN/ESTACIÓN/IDEAL PARA) small-caps sans 8pt tracking+400 #C9A84C | values light sans 11pt #F5ECD7 | intensity ●○ | contrast≥4.5:1 on dark zones | left=note pyramid right=specs bottom=IDEAL PARA | A4-legible never microscopic.
-4. BOTTLE FIDELITY — forensic replica of reference image.
-Output ONLY the final prompt in plain English. No headers, no markdown.`);
+1. SCENE SINGULARITY — architecturally specific, 2-3 props from notes/use-case, no generic backdrops.
+2. ELEGANCE — quiet luxury, patina, purposeful negative space. Vogue/Harper's Bazaar quality.
+3. TYPOGRAPHY: brand ultra-thin serif 28pt | name italic 22pt | labels (SALIDA/CORAZÓN/FONDO/FAMILIA OLFATIVA/INTENSIDAD/DURACIÓN/ESTACIÓN/IDEAL PARA) small-caps #C9A84C | values #F5ECD7 | intensity ●○ | left=note pyramid right=specs bottom=IDEAL PARA.
+4. BOTTLE FIDELITY — precise description of the real bottle.
+Output ONLY the final prompt in plain English. No headers, no markdown.`
+      );
       setRawP(base); markDone("prompt");
 
-      // PASO 4
-      setCurStep("gemini");
+      // PASO 3 — Pulir prompt
+      setCurStep("polish");
       let finalPr = base;
       try {
-        const gp = await aiCall([{text:`Elite luxury perfume photography art director. Elevate this prompt.
-MUST: 1.Scene only for this fragrance-no generic surfaces 2.Quiet luxury-history patina purpose 3.Typography legible: ultra-thin serif brand small-caps gold labels light sans values cream#F5ECD7 dark zones contrast≥4.5:1 4.Preserve ALL technical data 5.No clichés.
-Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
-        if(gp){finalPr=gp;setGemOk(true);}
-      } catch(e){console.warn(e);setGemOk(false);}
-      markDone("gemini"); setPrompt(finalPr); setPhase("done");
-    } catch(e){ setErr("Error: "+e.message); setPhase("upload"); }
+        const gp = await aiCall(
+          `Elite luxury perfume photography art director. Elevate this prompt.
+MUST: 1.Scene specific to this fragrance 2.Quiet luxury-history-patina 3.Typography legible: ultra-thin serif brand small-caps gold labels light sans values cream #F5ECD7 4.Preserve ALL technical data 5.No clichés.
+Output ONLY the enhanced prompt, nothing else.
+ORIGINAL:
+${base}`,
+          null
+        );
+        if(gp) finalPr = gp;
+      } catch(e){ console.warn(e); }
+      markDone("polish"); setPrompt(finalPr); setPhase("done");
+    } catch(e){ setErr("Error: "+e.message); setPhase("form"); }
   };
 
   const runGen = () => {
@@ -225,45 +207,72 @@ Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
     img.src=url;
   };
 
-  const reset=()=>{setPhase("upload");setB64(null);setPreview(null);setPerf(null);setPrompt("");setRawP("");setGenImg(null);setErr("");setDoneSteps([]);setCurStep(null);setGemOk(true);setGenning(false);};
-
+  const reset=()=>{setPhase("form");setPerf(null);setPrompt("");setRawP("");setGenImg(null);setErr("");setDoneSteps([]);setCurStep(null);setGenning(false);setMarca("");setNombre("");setPreview(null);};
 
   return (
     <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#0e0600,#1a0a00 50%,#0a0410)",padding:"20px 14px 40px"}}>
-      <div style={{maxWidth:560,margin:"0 auto"}}>
+      <div style={{maxWidth:520,margin:"0 auto"}}>
+
+        {/* HEADER */}
         <div style={{textAlign:"center",marginBottom:22}}>
           <div style={{fontSize:22,color:"#c9a84c",letterSpacing:8}}>✦</div>
           <h1 style={{fontSize:18,fontWeight:400,letterSpacing:5,color:"#e8d5b0",margin:"4px 0 0"}}>PERFUME PROMPT</h1>
-          <p style={{fontSize:9,letterSpacing:3,color:"#5a4a2a",margin:"5px 0 0"}}>GEMINI 2.0 VISION · GEMINI 2.0 · POLLINATIONS FLUX</p>
+          <p style={{fontSize:9,letterSpacing:3,color:"#5a4a2a",margin:"5px 0 0"}}>AI EDITORIAL · POLLINATIONS FLUX</p>
         </div>
 
+        {/* ERROR */}
         {err&&<div style={{background:"rgba(200,60,60,0.12)",border:"1px solid rgba(200,60,60,0.3)",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#e08080",display:"flex",justifyContent:"space-between",gap:10}}><span>{err}</span><span onClick={()=>setErr("")} style={{cursor:"pointer",fontSize:18}}>×</span></div>}
 
-        {phase==="upload"&&(
-          <div onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={onDrop}
-            onClick={()=>!preview&&fileRef.current.click()}
-            style={{border:`2px dashed ${drag?"#c9a84c":"rgba(201,168,76,0.22)"}`,borderRadius:14,padding:preview?"12px":"48px 20px",textAlign:"center",cursor:preview?"default":"pointer",background:drag?"rgba(201,168,76,0.06)":"rgba(255,255,255,0.02)",marginBottom:14}}>
-            <input ref={fileRef} type="file" accept="image/*" onChange={e=>loadImg(e.target.files[0])} />
-            {preview?(
-              <><img src={preview} style={{width:"100%",maxHeight:280,objectFit:"contain",borderRadius:10}} />
-              <div style={{display:"flex",gap:8,marginTop:12}}>
-                <button onClick={e=>{e.stopPropagation();fileRef.current.click();}} style={{...S.ghost,flex:1,fontSize:11}}>🔄 Cambiar</button>
-                <button onClick={e=>{e.stopPropagation();runPipeline();}} style={{...S.gold,flex:2.5,fontSize:12,letterSpacing:2}}>🚀 ANALIZAR Y GENERAR</button>
-              </div></>
-            ):(
-              <><div style={{fontSize:44,marginBottom:12}}>🖼️</div>
-              <p style={{fontSize:13,color:"#c9a84c",letterSpacing:2,margin:"0 0 6px"}}>SUBE LA FOTO DEL PERFUME</p>
-              <p style={{fontSize:11,color:"#5a4a2a",margin:"0 0 4px"}}>Arrastra aquí o toca para seleccionar</p>
-              <p style={{fontSize:10,color:"#3a2a0a",margin:0}}>Un clic — el pipeline corre automáticamente</p></>
-            )}
+        {/* FORM */}
+        {phase==="form"&&(
+          <div>
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(201,168,76,0.15)",borderRadius:14,padding:"20px 16px",marginBottom:14}}>
+              <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:"0 0 16px",textAlign:"center"}}>DATOS DEL PERFUME</p>
+
+              <p style={{fontSize:10,color:"#5a4a2a",letterSpacing:1,marginBottom:5}}>MARCA</p>
+              <input
+                style={S.input}
+                placeholder="Ej: Carolina Herrera"
+                value={marca}
+                onChange={e=>setMarca(e.target.value)}
+              />
+
+              <p style={{fontSize:10,color:"#5a4a2a",letterSpacing:1,marginBottom:5}}>NOMBRE DEL PERFUME</p>
+              <input
+                style={S.input}
+                placeholder="Ej: 212 VIP Rosé"
+                value={nombre}
+                onChange={e=>setNombre(e.target.value)}
+              />
+
+              <p style={{fontSize:10,color:"#5a4a2a",letterSpacing:1,marginBottom:5}}>FOTO DEL FRASCO (opcional)</p>
+              <div
+                onClick={()=>fileRef.current.click()}
+                style={{border:"1px dashed rgba(201,168,76,0.22)",borderRadius:10,padding:preview?"10px":"24px 16px",textAlign:"center",cursor:"pointer",marginBottom:14,background:"rgba(0,0,0,0.2)"}}>
+                <input ref={fileRef} type="file" accept="image/*" onChange={e=>loadImg(e.target.files[0])} />
+                {preview
+                  ? <img src={preview} style={{width:"100%",maxHeight:200,objectFit:"contain",borderRadius:8}} />
+                  : <><div style={{fontSize:28,marginBottom:6}}>📷</div><p style={{fontSize:11,color:"#5a4a2a"}}>Toca para subir foto (solo referencia visual)</p></>
+                }
+              </div>
+
+              <button
+                onClick={runPipeline}
+                disabled={!marca.trim()||!nombre.trim()}
+                style={{...S.gold,opacity:(!marca.trim()||!nombre.trim())?0.4:1}}>
+                🚀 GENERAR PROMPT EDITORIAL
+              </button>
+            </div>
           </div>
         )}
 
+        {/* RUNNING */}
         {phase==="running"&&(
           <div>
-            {preview&&<div style={{textAlign:"center",marginBottom:18}}><img src={preview} style={{width:100,height:100,objectFit:"contain",borderRadius:10,border:"1px solid rgba(201,168,76,0.25)",background:"rgba(0,0,0,0.3)"}} /></div>}
+            {preview&&<div style={{textAlign:"center",marginBottom:18}}><img src={preview} style={{width:90,height:90,objectFit:"contain",borderRadius:10,border:"1px solid rgba(201,168,76,0.25)",background:"rgba(0,0,0,0.3)"}} /></div>}
             <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(201,168,76,0.15)",borderRadius:14,padding:"20px 16px",marginBottom:14}}>
-              <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:"0 0 16px",textAlign:"center"}}>PIPELINE EN EJECUCIÓN</p>
+              <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:"0 0 4px",textAlign:"center"}}>{marca} {nombre}</p>
+              <p style={{fontSize:9,letterSpacing:3,color:"#5a4a2a",margin:"0 0 16px",textAlign:"center"}}>PIPELINE EN EJECUCIÓN</p>
               {STEPS.map((s,i)=>{
                 const isDone=doneSteps.includes(s.id),isActive=curStep===s.id;
                 return(<div key={s.id} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 12px",marginBottom:8,borderRadius:8,background:isActive?"rgba(201,168,76,0.08)":isDone?"rgba(80,180,80,0.05)":"rgba(0,0,0,0.2)",border:`1px solid ${isActive?"rgba(201,168,76,0.3)":isDone?"rgba(80,180,80,0.2)":"rgba(255,255,255,0.04)"}`,transition:"all 0.3s"}}>
@@ -279,20 +288,15 @@ Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
           </div>
         )}
 
+        {/* DONE */}
         {phase==="done"&&(
           <div>
-            <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-              {["✓ Claude Vision","✓ Web Search"].map(t=><span key={t} style={{fontSize:10,background:"rgba(80,180,80,0.15)",border:"1px solid rgba(80,180,80,0.3)",borderRadius:20,padding:"4px 11px",color:"#80d080"}}>{t}</span>)}
-              <span style={{fontSize:10,background:gemOk?"rgba(80,180,80,0.15)":"rgba(160,120,40,0.15)",border:`1px solid ${gemOk?"rgba(80,180,80,0.3)":"rgba(160,120,40,0.3)"}`,borderRadius:20,padding:"4px 11px",color:gemOk?"#80d080":"#c0a060"}}>{gemOk?"✓ Gemini Polish":"ℹ Claude directo"}</span>
-              {perf&&<span style={{fontSize:10,background:"rgba(201,168,76,0.12)",border:"1px solid rgba(201,168,76,0.25)",borderRadius:20,padding:"4px 11px",color:"#c9a84c"}}>{perf.marca} {perf.nombre}</span>}
-            </div>
-
             {perf&&(
               <details style={{marginBottom:12}}>
-                <summary style={{fontSize:10,color:"#6a5a3a",cursor:"pointer",userSelect:"none",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(201,168,76,0.12)",borderRadius:8,padding:"9px 14px"}}>📋 Datos detectados del perfume</summary>
+                <summary style={{fontSize:10,color:"#6a5a3a",cursor:"pointer",userSelect:"none",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(201,168,76,0.12)",borderRadius:8,padding:"9px 14px"}}>📋 {perf.marca} {perf.nombre} — notas detectadas</summary>
                 <div style={{background:"rgba(0,0,0,0.3)",borderRadius:"0 0 8px 8px",border:"1px solid rgba(201,168,76,0.1)",borderTop:"none",padding:14}}>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11,color:"#8a7a5a",marginBottom:10}}>
-                    {[["MARCA",perf.marca],["NOMBRE",perf.nombre],["FAMILIA",perf.familia],["ESTACIÓN",perf.season],["INTENSIDAD",perf.intensity+"/5"],["IDEAL PARA",perf.occasion]].map(([l,v])=>(
+                    {[["FAMILIA",perf.familia],["ESTACIÓN",perf.season],["INTENSIDAD",perf.intensity+"/5"],["IDEAL PARA",perf.occasion]].map(([l,v])=>(
                       <span key={l}><span style={{color:"#5a4a2a",fontSize:9,letterSpacing:1,display:"block"}}>{l}</span>{v||"—"}</span>
                     ))}
                   </div>
@@ -305,7 +309,7 @@ Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
 
             <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(201,168,76,0.28)",borderRadius:14,padding:20,marginBottom:12}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:0}}>PROMPT {gemOk?"GEMINI-ENHANCED":"CLAUDE"}</p>
+                <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:0}}>PROMPT EDITORIAL</p>
                 {preview&&<img src={preview} style={{width:34,height:34,objectFit:"contain",borderRadius:4,border:"1px solid rgba(201,168,76,0.2)"}} />}
               </div>
               <div style={{background:"rgba(0,0,0,0.45)",borderRadius:8,padding:14,border:"1px solid rgba(201,168,76,0.1)",marginBottom:14,maxHeight:200,overflowY:"auto"}}>
@@ -313,11 +317,10 @@ Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                 <button onClick={runGen} disabled={genning} style={{...S.gold,gridColumn:"1/-1",fontSize:13,letterSpacing:3,padding:16,cursor:genning?"not-allowed":"pointer",background:genning?"rgba(80,60,20,0.5)":"linear-gradient(135deg,#c9a84c,#9a6820)",display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
-                  {genning?<><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>✦</span>GENERANDO...</>:"🎨 GENERAR IMAGEN"}
+                  {genning?<><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>✦</span> GENERANDO...</>:"🎨 GENERAR IMAGEN"}
                 </button>
                 <button onClick={()=>copy(prompt)} style={{...S.ghost,fontSize:10}}>{copied?"✓ COPIADO":"📋 Copiar prompt"}</button>
-                <button onClick={()=>window.open(`https://nanobanana.ai/?prompt=${encodeURIComponent(prompt)}`,"_blank")} style={{...S.ghost,fontSize:10}}>🍌 NanoBanana</button>
-                <button onClick={reset} style={{...S.ghost,gridColumn:"1/-1"}}>↺ ANALIZAR OTRO</button>
+                <button onClick={reset} style={{...S.ghost,fontSize:10}}>↺ Nuevo perfume</button>
               </div>
 
               {genning&&<div style={{marginTop:20,textAlign:"center",padding:"26px 20px",background:"rgba(0,0,0,0.3)",borderRadius:12,border:"1px solid rgba(201,168,76,0.15)"}}>
@@ -339,21 +342,11 @@ Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
                   </a>
                 </div>
               )}
-
-              {rawP&&rawP!==prompt&&(
-                <details style={{marginTop:16}}>
-                  <summary style={{fontSize:10,color:"#4a3a1a",cursor:"pointer",userSelect:"none"}}>Ver prompt original Claude</summary>
-                  <div style={{background:"rgba(0,0,0,0.3)",borderRadius:6,padding:12,marginTop:8,maxHeight:150,overflowY:"auto"}}>
-                    <p style={{fontSize:11,lineHeight:1.7,color:"#5a4a2a",margin:0,whiteSpace:"pre-wrap"}}>{rawP}</p>
-                  </div>
-                  <button onClick={()=>copy(rawP)} style={{...S.ghost,marginTop:8,fontSize:10,padding:"7px 14px"}}>📋 Copiar versión Claude</button>
-                </details>
-              )}
             </div>
           </div>
         )}
 
-        <p style={{textAlign:"center",fontSize:8,letterSpacing:2,color:"#1e0e00",marginTop:18}}>CLAUDE SONNET 4.6 · GEMINI 2.0 FLASH · POLLINATIONS FLUX</p>
+        <p style={{textAlign:"center",fontSize:8,letterSpacing:2,color:"#1e0e00",marginTop:18}}>POLLINATIONS AI · FLUX · SIN API KEY</p>
       </div>
       <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
