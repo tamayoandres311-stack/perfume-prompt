@@ -102,8 +102,9 @@ function App() {
   const fileRef = useRef();
 
   const parseJSON = (txt) => {
-    try { return JSON.parse(txt.trim()); } catch {}
-    const m = txt.match(/\{[\s\S]*\}/);
+    const clean = txt.replace(/```(?:json)?/gi,"").replace(/```/g,"").trim();
+    try { return JSON.parse(clean); } catch {}
+    const m = clean.match(/\{[\s\S]*\}/);
     if (m) { try { return JSON.parse(m[0]); } catch {} }
     throw new Error("JSON parse failed");
   };
