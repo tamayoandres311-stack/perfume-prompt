@@ -106,7 +106,7 @@ function App() {
     try { return JSON.parse(clean); } catch {}
     const m = clean.match(/\{[\s\S]*\}/);
     if (m) { try { return JSON.parse(m[0]); } catch {} }
-    throw new Error("JSON parse failed");
+    throw new Error("RESPUESTA IA: " + txt.slice(0,200));
   };
 
   const searchCall = async (sys, usr) => {
@@ -149,6 +149,7 @@ function App() {
         {text:"Devuelve SOLO el JSON, sin backticks ni markdown."}
       ], `Analiza la imagen de perfume y devuelve SOLO JSON sin backticks:
 {"marca":"","nombre":"","subtitulo":"","desc_frasco":"","desc_frasco_en":"ultra-detailed English bottle description for AI generators: exact silhouette, faceting, glass color, optical depth, metallic trim, cap design, engravings, proportions","notas_salida":[],"notas_corazon":[],"notas_fondo":[],"familia_olfativa":"","intensidad":"4","duracion":"","estacion":"","ocasion":"","hay_notas":false}`);
+      if (!vt) throw new Error("Respuesta vacía de la IA");
       const vp = parseJSON(vt);
       const pf = {
         marca:vp.marca||"",nombre:vp.nombre||"",subtitulo:vp.subtitulo||"",
