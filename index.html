@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Perfume Prompt Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; background: #0e0600; font-family: Georgia, serif; color: #e8d5b0; }
+  select option { background: #1a0a00; color: #e8d5b0; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: rgba(201,168,76,0.3); border-radius: 2px; }
+  @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+  input[type="file"] { display: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useCallback } = React;
+
+const getKey = () => localStorage.getItem("gemini_key") || "";
+const saveKey = (k) => localStorage.setItem("gemini_key", k);
+
+const geminiCall = async (parts, systemInstruction, useSearch=false) => {
+  const GEMINI_KEY = getKey();
+  const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
+  const body = {
+    contents:[{role:"user",parts}],
+    generationConfig:{temperature:0.4,maxOutputTokens:2200}
+  };
+  if (systemInstruction) body.systemInstruction = {parts:[{text:systemInstruction}]};
+  if (useSearch) body.tools = [{googleSearch:{}}];
+  const url = GEMINI_URL;
+  const r = await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d = await r.json();
+  if (d.error) throw new Error(d.error.message);
+  return d.candidates?.[0]?.content?.parts?.map(p=>p.text||"").join("").trim() || "";
+};
+const pollImg = (prompt, seed) =>
+  `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.slice(0,1800))}?width=832&height=1040&model=flux&seed=${seed}&nologo=true&enhance=true`;
+
+const S = {
+  gold:  { width:"100%",padding:"14px",border:"none",borderRadius:8,background:"linear-gradient(135deg,#c9a84c,#9a6820)",color:"#0e0600",fontSize:12,fontFamily:"Georgia,serif",letterSpacing:3,fontWeight:700,cursor:"pointer" },
+  ghost: { padding:"11px 14px",border:"1px solid rgba(201,168,76,0.22)",borderRadius:8,background:"transparent",color:"#c9a84c",fontSize:10,fontFamily:"Georgia,serif",letterSpacing:2,cursor:"pointer" },
+};
+
+const SCENES = {
+  floral:    "A private Parisian atelier — fresh petals on aged white marble, morning dew, arched windows flooding soft north light",
+  oriental:  "Hammered brass trays, raw spice clusters on dark obsidian, carved amber lantern casting geometric shadows, incense trails",
+  amaderado: "Private library at dusk — cognac leather, gold-spined first editions, crystal tumbler catching firelight on mahogany",
+  woody:     "Private library at dusk — cognac leather, gold-spined first editions, crystal tumbler catching firelight on mahogany",
+  acuatico:  "Elevated Mediterranean terrace at moonrise — sea-salt mist on dark stone, white linen, champagne flute catching starlight",
+  aquatic:   "Elevated Mediterranean terrace at moonrise — sea-salt mist on dark stone, white linen, champagne flute catching starlight",
+  citrico:   "Amalfi coast breakfast terrace — hand-painted ceramic tiles, glistening citrus halves, linen billowing in sea breeze",
+  citrus:    "Amalfi coast breakfast terrace — hand-painted ceramic tiles, glistening citrus halves, linen billowing in sea breeze",
+  gourmand:  "Michelin patisserie after hours — marble dusted with gold, copper pots, silk ribbon, warm oven glow on brushed steel",
+  chypre:    "Private estate garden in early autumn — moss-covered stone urns, bronze fountain, oak leaves on limestone pavement",
+  fougere:   "Grand Hotel shaving room — silver brushes, bevelled mirrors, heated towel rails, bay rum on veined marble",
+  aldehidico:"Golden-age Hollywood boudoir — crystal vanity bottles, white gardenias, art deco mirror, champagne on lacquered tray",
+  default:   "Luxury penthouse at blue hour — black granite, single white orchid, city lights blurred through floor-to-ceiling glass"
+};
+
+const getScene = (fam, occ) => {
+  const k = (fam||"").toLowerCase();
+  for (const [key, val] of Object.entries(SCENES))
+    if (key !== "default" && k.includes(key)) return val;
+  const o = (occ||"").toLowerCase();
+  if (o.includes("noche")||o.includes("gala")) return SCENES.aldehidico;
+  if (o.includes("romance")||o.includes("sedu")) return SCENES.oriental;
+  return SCENES.default;
+};
+
+const STEPS = [
+  { id:"vision", emoji:"📷", label:"Analizando imagen del perfume" },
+  { id:"search", emoji:"🌐", label:"Investigando notas olfativas" },
+  { id:"prompt", emoji:"✨", label:"Construyendo escena editorial" },
+  { id:"gemini", emoji:"💎", label:"Puliendo con Gemini 2.0" },
+];
+
+function KeySetup({onSave}) {
+  const [k, setK] = React.useState("");
+  return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#0e0600,#1a0a00)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+      <div style={{maxWidth:400,width:"100%"}}>
+        <div style={{textAlign:"center",marginBottom:28}}>
+          <div style={{fontSize:22,color:"#c9a84c",letterSpacing:8}}>✦</div>
+          <h1 style={{fontSize:18,fontWeight:400,letterSpacing:5,color:"#e8d5b0",margin:"6px 0 4px"}}>PERFUME PROMPT</h1>
+          <p style={{fontSize:9,letterSpacing:3,color:"#5a4a2a"}}>CONFIGURACIÓN INICIAL</p>
+        </div>
+        <div style={{background:"rgba(201,168,76,0.06)",border:"1px solid rgba(201,168,76,0.18)",borderRadius:12,padding:22}}>
+          <p style={{fontSize:12,color:"#c9a84c",letterSpacing:1,marginBottom:6}}>GEMINI API KEY</p>
+          <p style={{fontSize:11,color:"#7a6a4a",marginBottom:14,lineHeight:1.6}}>
+            Obtén tu key gratuita en <span style={{color:"#c9a84c"}}>aistudio.google.com/apikey</span> → Crear clave de API. Se guarda solo en tu dispositivo.
+          </p>
+          <input
+            type="password"
+            placeholder="Pega tu API key aquí…"
+            value={k}
+            onChange={e=>setK(e.target.value)}
+            style={{width:"100%",padding:"12px",background:"rgba(0,0,0,0.3)",border:"1px solid rgba(201,168,76,0.3)",borderRadius:8,color:"#e8d5b0",fontSize:12,fontFamily:"Georgia,serif",marginBottom:14,boxSizing:"border-box"}}
+          />
+          <button
+            onClick={()=>{if(k.trim()){saveKey(k.trim());onSave();}}}
+            style={{...{width:"100%",padding:"14px",border:"none",borderRadius:8,background:"linear-gradient(135deg,#c9a84c,#9a6820)",color:"#0e0600",fontSize:12,fontFamily:"Georgia,serif",letterSpacing:3,fontWeight:700,cursor:"pointer"}}}>
+            GUARDAR Y CONTINUAR
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [b64, setB64]         = useState(null);
+  const [mime, setMime]       = useState("image/jpeg");
+  const [preview, setPreview] = useState(null);
+  const [drag, setDrag]       = useState(false);
+  const [hasKey, setHasKey]   = useState(!!getKey());
+  const [phase, setPhase]     = useState("upload");
+  const [curStep, setCurStep] = useState(null);
+  const [doneSteps, setDoneSteps] = useState([]);
+  const [perf, setPerf]       = useState(null);
+  const [prompt, setPrompt]   = useState("");
+  const [rawP, setRawP]       = useState("");
+  const [gemOk, setGemOk]     = useState(true);
+  const [genImg, setGenImg]   = useState(null);
+  const [genning, setGenning] = useState(false);
+  const [copied, setCopied]   = useState(false);
+  const [err, setErr]         = useState("");
+  const fileRef = useRef();
+
+  const parseJSON = (txt) => {
+    try { return JSON.parse(txt.trim()); } catch {}
+    const m = txt.match(/\{[\s\S]*\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch {} }
+    throw new Error("JSON parse failed");
+  };
+
+  const searchCall = async (sys, usr) => {
+    return await geminiCall([{text: usr}], sys, true);
+  };
+
+  const loadImg = (file) => {
+    if (!file||!file.type.startsWith("image/")) return;
+    const rd = new FileReader();
+    rd.onload = e => { setB64(e.target.result.split(",")[1]); setMime(file.type); setPreview(e.target.result); setErr(""); };
+    rd.readAsDataURL(file);
+  };
+
+  const onDrop = useCallback(e => { e.preventDefault(); setDrag(false); loadImg(e.dataTransfer.files[0]); }, []);
+
+  const markDone = (id) => { setCurStep(null); setDoneSteps(p=>[...p,id]); };
+
+  const copy = (t) => {
+    try {
+      navigator.clipboard.writeText(t).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500);}).catch(()=>fbCopy(t));
+    } catch(e){ fbCopy(t); }
+  };
+  const fbCopy = (t) => {
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.cssText = "position:fixed;top:-9999px;left:-9999px;opacity:0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand("copy"); } catch(e){}
+    document.body.removeChild(ta);
+    setCopied(true); setTimeout(()=>setCopied(false),2500);
+  };
+
+  const runPipeline = async () => {
+    if (!b64) return;
+    setPhase("running"); setErr(""); setDoneSteps([]); setPrompt(""); setRawP(""); setGenImg(null);
+    try {
+      // PASO 1
+      setCurStep("vision");
+      const vt = await geminiCall([
+        {inlineData:{mimeType:mime,data:b64}},
+        {text:"Devuelve SOLO el JSON, sin backticks ni markdown."}
+      ], `Analiza la imagen de perfume y devuelve SOLO JSON sin backticks:
+{"marca":"","nombre":"","subtitulo":"","desc_frasco":"","desc_frasco_en":"ultra-detailed English bottle description for AI generators: exact silhouette, faceting, glass color, optical depth, metallic trim, cap design, engravings, proportions","notas_salida":[],"notas_corazon":[],"notas_fondo":[],"familia_olfativa":"","intensidad":"4","duracion":"","estacion":"","ocasion":"","hay_notas":false}`);
+      const vp = parseJSON(vt);
+      const pf = {
+        marca:vp.marca||"",nombre:vp.nombre||"",subtitulo:vp.subtitulo||"",
+        descFrasco:vp.desc_frasco||"",descFrascoEn:vp.desc_frasco_en||"",
+        familia:vp.familia_olfativa||"",intensity:vp.intensidad||"4",
+        duration:vp.duracion||"6-8h",season:vp.estacion||"Otoño/Invierno",occasion:vp.ocasion||"",
+        salida:vp.notas_salida||[],corazon:vp.notas_corazon||[],fondo:vp.notas_fondo||[]
+      };
+      markDone("vision");
+
+      // PASO 2
+      setCurStep("search");
+      if ((!vp.hay_notas||(pf.salida.length+pf.corazon.length+pf.fondo.length===0))&&pf.marca&&pf.nombre){
+        try {
+          const st = await searchCall(
+            `Experto en perfumería. Devuelve SOLO JSON sin backticks: {"salida":[],"corazon":[],"fondo":[],"familia":"","desc_frasco_en":"","ocasion":""}`,
+            `Notas olfativas de "${pf.nombre}" de "${pf.marca}"${pf.subtitulo?` (${pf.subtitulo})`:""}`
+          );
+          const sp = parseJSON(st);
+          if(sp.salida?.length) pf.salida=sp.salida;
+          if(sp.corazon?.length) pf.corazon=sp.corazon;
+          if(sp.fondo?.length) pf.fondo=sp.fondo;
+          if(sp.familia&&!pf.familia) pf.familia=sp.familia;
+          if(sp.desc_frasco_en&&!pf.descFrascoEn) pf.descFrascoEn=sp.desc_frasco_en;
+          if(sp.ocasion&&!pf.occasion) pf.occasion=sp.ocasion;
+        } catch(e){ console.warn(e); }
+      }
+      markDone("search"); setPerf(pf);
+
+      // PASO 3
+      setCurStep("prompt");
+      const scene = getScene(pf.familia,pf.occasion);
+      const base = await geminiCall([
+        {inlineData:{mimeType:mime,data:b64}},
+        {text:`Reference bottle above.
+PERFUME: ${pf.marca} ${pf.nombre}${pf.subtitulo?" — "+pf.subtitulo:""}
+FAMILY: ${pf.familia} | INTENSITY: ${pf.intensity}/5 | DURATION: ${pf.duration} | SEASON: ${pf.season} | FOR: ${pf.occasion}
+TOP: ${pf.salida.join(", ")||"—"} | HEART: ${pf.corazon.join(", ")||"—"} | BASE: ${pf.fondo.join(", ")||"—"}
+BOTTLE: ${pf.descFrasco} / ${pf.descFrascoEn}
+SCENE: ${scene}
+BUILD: expand scene 2-3 props from notes/use-case | bottle center 35% forensic replica | left macro clusters TOP/HEART/BASE | typography all labels Spanish | post scene-matched grade 25% vignette 6% grain chrom-ab glass only | Hasselblad H6D-400c 120mm f/8 ISO200 8K 4:5 300dpi`}
+      ], `Elite luxury perfume editorial photographer and AI prompt architect.
+RULES:
+1. SCENE SINGULARITY — architecturally specific, 2-3 props from notes/use-case with narrative purpose, no generic backdrops.
+2. ELEGANCE — quiet luxury, patina, history, purposeful negative space. Vogue/Harper's Bazaar quality.
+3. TYPOGRAPHY: brand ultra-thin serif 28pt tracking+200 | name medium italic 22pt | labels (SALIDA/CORAZÓN/FONDO/FAMILIA OLFATIVA/INTENSIDAD/DURACIÓN/ESTACIÓN/IDEAL PARA) small-caps sans 8pt tracking+400 #C9A84C | values light sans 11pt #F5ECD7 | intensity ●○ | contrast≥4.5:1 on dark zones | left=note pyramid right=specs bottom=IDEAL PARA | A4-legible never microscopic.
+4. BOTTLE FIDELITY — forensic replica of reference image.
+Output ONLY the final prompt in plain English. No headers, no markdown.`);
+      setRawP(base); markDone("prompt");
+
+      // PASO 4
+      setCurStep("gemini");
+      let finalPr = base;
+      try {
+        const gp = await geminiCall([{text:`Elite luxury perfume photography art director. Elevate this prompt.
+MUST: 1.Scene only for this fragrance-no generic surfaces 2.Quiet luxury-history patina purpose 3.Typography legible: ultra-thin serif brand small-caps gold labels light sans values cream#F5ECD7 dark zones contrast≥4.5:1 4.Preserve ALL technical data 5.No clichés.
+Output ONLY enhanced prompt.\nORIGINAL:\n${base}`}], null, false);
+        if(gp){finalPr=gp;setGemOk(true);}
+      } catch(e){console.warn(e);setGemOk(false);}
+      markDone("gemini"); setPrompt(finalPr); setPhase("done");
+    } catch(e){ setErr("Error: "+e.message); setPhase("upload"); }
+  };
+
+  const runGen = () => {
+    const p=prompt||rawP; if(!p) return;
+    setGenning(true); setGenImg(null); setErr("");
+    const url = pollImg(p, Math.floor(Math.random()*99999));
+    const img = new Image();
+    img.onload=()=>{setGenImg(url);setGenning(false);};
+    img.onerror=()=>{setErr("Error imagen — intenta de nuevo");setGenning(false);};
+    img.src=url;
+  };
+
+  const reset=()=>{setPhase("upload");setB64(null);setPreview(null);setPerf(null);setPrompt("");setRawP("");setGenImg(null);setErr("");setDoneSteps([]);setCurStep(null);setGemOk(true);setGenning(false);};
+
+  if (!hasKey) return <KeySetup onSave={()=>setHasKey(true)} />;
+
+  return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#0e0600,#1a0a00 50%,#0a0410)",padding:"20px 14px 40px"}}>
+      <div style={{maxWidth:560,margin:"0 auto"}}>
+        <div style={{textAlign:"center",marginBottom:22}}>
+          <div style={{fontSize:22,color:"#c9a84c",letterSpacing:8}}>✦</div>
+          <h1 style={{fontSize:18,fontWeight:400,letterSpacing:5,color:"#e8d5b0",margin:"4px 0 0"}}>PERFUME PROMPT</h1>
+          <p style={{fontSize:9,letterSpacing:3,color:"#5a4a2a",margin:"5px 0 0"}}>GEMINI 2.0 VISION · GEMINI 2.0 · POLLINATIONS FLUX</p>
+        </div>
+
+        {err&&<div style={{background:"rgba(200,60,60,0.12)",border:"1px solid rgba(200,60,60,0.3)",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#e08080",display:"flex",justifyContent:"space-between",gap:10}}><span>{err}</span><span onClick={()=>setErr("")} style={{cursor:"pointer",fontSize:18}}>×</span></div>}
+
+        {phase==="upload"&&(
+          <div onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={onDrop}
+            onClick={()=>!preview&&fileRef.current.click()}
+            style={{border:`2px dashed ${drag?"#c9a84c":"rgba(201,168,76,0.22)"}`,borderRadius:14,padding:preview?"12px":"48px 20px",textAlign:"center",cursor:preview?"default":"pointer",background:drag?"rgba(201,168,76,0.06)":"rgba(255,255,255,0.02)",marginBottom:14}}>
+            <input ref={fileRef} type="file" accept="image/*" onChange={e=>loadImg(e.target.files[0])} />
+            {preview?(
+              <><img src={preview} style={{width:"100%",maxHeight:280,objectFit:"contain",borderRadius:10}} />
+              <div style={{display:"flex",gap:8,marginTop:12}}>
+                <button onClick={e=>{e.stopPropagation();fileRef.current.click();}} style={{...S.ghost,flex:1,fontSize:11}}>🔄 Cambiar</button>
+                <button onClick={e=>{e.stopPropagation();runPipeline();}} style={{...S.gold,flex:2.5,fontSize:12,letterSpacing:2}}>🚀 ANALIZAR Y GENERAR</button>
+              </div></>
+            ):(
+              <><div style={{fontSize:44,marginBottom:12}}>🖼️</div>
+              <p style={{fontSize:13,color:"#c9a84c",letterSpacing:2,margin:"0 0 6px"}}>SUBE LA FOTO DEL PERFUME</p>
+              <p style={{fontSize:11,color:"#5a4a2a",margin:"0 0 4px"}}>Arrastra aquí o toca para seleccionar</p>
+              <p style={{fontSize:10,color:"#3a2a0a",margin:0}}>Un clic — el pipeline corre automáticamente</p></>
+            )}
+          </div>
+        )}
+
+        {phase==="running"&&(
+          <div>
+            {preview&&<div style={{textAlign:"center",marginBottom:18}}><img src={preview} style={{width:100,height:100,objectFit:"contain",borderRadius:10,border:"1px solid rgba(201,168,76,0.25)",background:"rgba(0,0,0,0.3)"}} /></div>}
+            <div style={{background:"rgba(255,255,255,0.02)",border:"1px solid rgba(201,168,76,0.15)",borderRadius:14,padding:"20px 16px",marginBottom:14}}>
+              <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:"0 0 16px",textAlign:"center"}}>PIPELINE EN EJECUCIÓN</p>
+              {STEPS.map((s,i)=>{
+                const isDone=doneSteps.includes(s.id),isActive=curStep===s.id;
+                return(<div key={s.id} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 12px",marginBottom:8,borderRadius:8,background:isActive?"rgba(201,168,76,0.08)":isDone?"rgba(80,180,80,0.05)":"rgba(0,0,0,0.2)",border:`1px solid ${isActive?"rgba(201,168,76,0.3)":isDone?"rgba(80,180,80,0.2)":"rgba(255,255,255,0.04)"}`,transition:"all 0.3s"}}>
+                  <div style={{width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,background:isActive?"rgba(201,168,76,0.2)":isDone?"rgba(80,180,80,0.2)":"rgba(255,255,255,0.04)",border:`1px solid ${isActive?"rgba(201,168,76,0.5)":isDone?"rgba(80,180,80,0.4)":"rgba(255,255,255,0.08)"}`}}>
+                    {isDone?<span style={{color:"#80d080",fontSize:13}}>✓</span>:isActive?<span style={{color:"#c9a84c",fontSize:12,display:"inline-block",animation:"spin 1s linear infinite"}}>✦</span>:<span style={{color:"#3a2a0a",fontSize:11}}>{i+1}</span>}
+                  </div>
+                  <p style={{margin:0,fontSize:12,flex:1,color:isActive?"#e8d5b0":isDone?"#80d080":"#4a3a2a",fontWeight:isActive?"bold":"normal"}}>{s.emoji} {s.label}</p>
+                  {isActive&&<span style={{fontSize:9,color:"#c9a84c",letterSpacing:1,background:"rgba(201,168,76,0.1)",border:"1px solid rgba(201,168,76,0.2)",borderRadius:20,padding:"3px 8px",flexShrink:0}}>EN CURSO</span>}
+                </div>);
+              })}
+            </div>
+            <p style={{fontSize:10,color:"#3a2a0a",textAlign:"center",letterSpacing:1}}>20 — 40 segundos aproximadamente</p>
+          </div>
+        )}
+
+        {phase==="done"&&(
+          <div>
+            <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+              {["✓ Claude Vision","✓ Web Search"].map(t=><span key={t} style={{fontSize:10,background:"rgba(80,180,80,0.15)",border:"1px solid rgba(80,180,80,0.3)",borderRadius:20,padding:"4px 11px",color:"#80d080"}}>{t}</span>)}
+              <span style={{fontSize:10,background:gemOk?"rgba(80,180,80,0.15)":"rgba(160,120,40,0.15)",border:`1px solid ${gemOk?"rgba(80,180,80,0.3)":"rgba(160,120,40,0.3)"}`,borderRadius:20,padding:"4px 11px",color:gemOk?"#80d080":"#c0a060"}}>{gemOk?"✓ Gemini Polish":"ℹ Claude directo"}</span>
+              {perf&&<span style={{fontSize:10,background:"rgba(201,168,76,0.12)",border:"1px solid rgba(201,168,76,0.25)",borderRadius:20,padding:"4px 11px",color:"#c9a84c"}}>{perf.marca} {perf.nombre}</span>}
+            </div>
+
+            {perf&&(
+              <details style={{marginBottom:12}}>
+                <summary style={{fontSize:10,color:"#6a5a3a",cursor:"pointer",userSelect:"none",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(201,168,76,0.12)",borderRadius:8,padding:"9px 14px"}}>📋 Datos detectados del perfume</summary>
+                <div style={{background:"rgba(0,0,0,0.3)",borderRadius:"0 0 8px 8px",border:"1px solid rgba(201,168,76,0.1)",borderTop:"none",padding:14}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,fontSize:11,color:"#8a7a5a",marginBottom:10}}>
+                    {[["MARCA",perf.marca],["NOMBRE",perf.nombre],["FAMILIA",perf.familia],["ESTACIÓN",perf.season],["INTENSIDAD",perf.intensity+"/5"],["IDEAL PARA",perf.occasion]].map(([l,v])=>(
+                      <span key={l}><span style={{color:"#5a4a2a",fontSize:9,letterSpacing:1,display:"block"}}>{l}</span>{v||"—"}</span>
+                    ))}
+                  </div>
+                  {[["SALIDA","#c9a84c",perf.salida],["CORAZÓN","#e8d5b0",perf.corazon],["FONDO","#9a8a6a",perf.fondo]].map(([l,c,n])=>(
+                    <div key={l} style={{marginBottom:6}}><span style={{color:"#5a4a2a",fontSize:9,letterSpacing:1}}>{l}</span><p style={{color:c,fontSize:11,margin:"2px 0 0"}}>{n.join(", ")||"—"}</p></div>
+                  ))}
+                </div>
+              </details>
+            )}
+
+            <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(201,168,76,0.28)",borderRadius:14,padding:20,marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:0}}>PROMPT {gemOk?"GEMINI-ENHANCED":"CLAUDE"}</p>
+                {preview&&<img src={preview} style={{width:34,height:34,objectFit:"contain",borderRadius:4,border:"1px solid rgba(201,168,76,0.2)"}} />}
+              </div>
+              <div style={{background:"rgba(0,0,0,0.45)",borderRadius:8,padding:14,border:"1px solid rgba(201,168,76,0.1)",marginBottom:14,maxHeight:200,overflowY:"auto"}}>
+                <p style={{fontSize:12,lineHeight:1.85,color:"#e8d5b0",margin:0,whiteSpace:"pre-wrap"}}>{prompt}</p>
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+                <button onClick={runGen} disabled={genning} style={{...S.gold,gridColumn:"1/-1",fontSize:13,letterSpacing:3,padding:16,cursor:genning?"not-allowed":"pointer",background:genning?"rgba(80,60,20,0.5)":"linear-gradient(135deg,#c9a84c,#9a6820)",display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
+                  {genning?<><span style={{display:"inline-block",animation:"spin 1s linear infinite"}}>✦</span>GENERANDO...</>:"🎨 GENERAR IMAGEN"}
+                </button>
+                <button onClick={()=>copy(prompt)} style={{...S.ghost,fontSize:10}}>{copied?"✓ COPIADO":"📋 Copiar prompt"}</button>
+                <button onClick={()=>window.open(`https://nanobanana.ai/?prompt=${encodeURIComponent(prompt)}`,"_blank")} style={{...S.ghost,fontSize:10}}>🍌 NanoBanana</button>
+                <button onClick={reset} style={{...S.ghost,gridColumn:"1/-1"}}>↺ ANALIZAR OTRO</button>
+              </div>
+
+              {genning&&<div style={{marginTop:20,textAlign:"center",padding:"26px 20px",background:"rgba(0,0,0,0.3)",borderRadius:12,border:"1px solid rgba(201,168,76,0.15)"}}>
+                <div style={{fontSize:28,color:"#c9a84c",animation:"spin 2s linear infinite",display:"inline-block",marginBottom:10}}>✦</div>
+                <p style={{fontSize:11,color:"#8a7a5a",letterSpacing:2,margin:"0 0 4px"}}>GENERANDO CON POLLINATIONS FLUX</p>
+                <p style={{fontSize:10,color:"#4a3a1a",margin:0}}>15 — 30 segundos</p>
+              </div>}
+
+              {genImg&&!genning&&(
+                <div style={{marginTop:20}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                    <p style={{fontSize:9,letterSpacing:3,color:"#c9a84c",margin:0}}>✦ IMAGEN GENERADA</p>
+                    <button onClick={runGen} style={{...S.ghost,padding:"6px 14px",fontSize:9}}>🔄 Regenerar</button>
+                  </div>
+                  <img src={genImg} style={{width:"100%",borderRadius:12,border:"2px solid rgba(201,168,76,0.35)",display:"block",boxShadow:"0 8px 40px rgba(0,0,0,0.6)"}} />
+                  <a href={genImg} download={`${perf?.marca||"perfume"}_${perf?.nombre||"img"}.png`} target="_blank" rel="noreferrer"
+                    style={{display:"block",textAlign:"center",marginTop:12,color:"#c9a84c",fontSize:11,letterSpacing:2,textDecoration:"none",background:"rgba(201,168,76,0.08)",border:"1px solid rgba(201,168,76,0.25)",borderRadius:8,padding:12,fontFamily:"Georgia,serif"}}>
+                    ⬇ DESCARGAR IMAGEN
+                  </a>
+                </div>
+              )}
+
+              {rawP&&rawP!==prompt&&(
+                <details style={{marginTop:16}}>
+                  <summary style={{fontSize:10,color:"#4a3a1a",cursor:"pointer",userSelect:"none"}}>Ver prompt original Claude</summary>
+                  <div style={{background:"rgba(0,0,0,0.3)",borderRadius:6,padding:12,marginTop:8,maxHeight:150,overflowY:"auto"}}>
+                    <p style={{fontSize:11,lineHeight:1.7,color:"#5a4a2a",margin:0,whiteSpace:"pre-wrap"}}>{rawP}</p>
+                  </div>
+                  <button onClick={()=>copy(rawP)} style={{...S.ghost,marginTop:8,fontSize:10,padding:"7px 14px"}}>📋 Copiar versión Claude</button>
+                </details>
+              )}
+            </div>
+          </div>
+        )}
+
+        <p style={{textAlign:"center",fontSize:8,letterSpacing:2,color:"#1e0e00",marginTop:18}}>CLAUDE SONNET 4.6 · GEMINI 2.0 FLASH · POLLINATIONS FLUX</p>
+      </div>
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+ReactDOM.render(<App />, document.getElementById("root"));
+</script>
+</body>
+</html>
